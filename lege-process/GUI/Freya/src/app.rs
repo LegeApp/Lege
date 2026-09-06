@@ -1691,11 +1691,11 @@ fn pages_device_card(
     page_range_input: State<String>,
 ) -> Element {
     let options = state.read().options.clone();
-    // Symbol substitution is a JBIG2 feature, so the opt-out is only
+    // Symbol substitution is a JBIG2 feature, so the opt-in is only
     // meaningful while JBIG2 is actually the text encoder. Compatibility mode
     // swaps it for CCITT4, and grayscale/MRC has no bilevel text plane at
     // all, so the toggle disappears in both.
-    let show_jbig2_no_symbol = matches!(options.output_format, OutputFormat::Pdf)
+    let show_jbig2_symbol_mode = matches!(options.output_format, OutputFormat::Pdf)
         && !options.jpeg_compat
         && !options.grayscale_mode
         && matches!(options.compression_type, CompressionType::Jbig2);
@@ -1822,20 +1822,20 @@ fn pages_device_card(
             ),
         ),
     ];
-    if show_jbig2_no_symbol {
+    if show_jbig2_symbol_mode {
         col1.push(tooltip_wrap_at(
             state,
             TooltipArea::PagesDeviceCard,
-            GUI_TEXT.interactive.tooltips.jbig2_no_symbol.clone(),
+            GUI_TEXT.interactive.tooltips.jbig2_symbol_mode.clone(),
             AttachedPosition::Left,
             compact_checkbox_row(
-                GUI_TEXT.interactive.labels.jbig2_no_symbol.clone(),
-                options.no_symbol_mode,
+                GUI_TEXT.interactive.labels.jbig2_symbol_mode.clone(),
+                options.symbol_mode,
                 {
                     let mut state = state;
                     move |_| {
                         let mut s = state.write();
-                        s.options.no_symbol_mode = !s.options.no_symbol_mode;
+                        s.options.symbol_mode = !s.options.symbol_mode;
                     }
                 },
             ),
@@ -1860,28 +1860,29 @@ fn pages_device_card(
             },
         ),
     ));
-    // The two opt-outs from truetyping, which exclude each other: JBIG2 keeps
-    // the text as a raster codec, and compatibility mode pairs CCITT4 text
-    // with baseline JPEG images. Clearing either returns to truetyping. Both
-    // are PDF-only.
+    // The two opt-outs from JBIG2 text, which exclude each other: truetyping
+    // turns the text into an embedded per-book font, and compatibility mode
+    // pairs CCITT4 text with baseline JPEG images. Clearing either returns to
+    // JBIG2. Both are PDF-only.
     if matches!(options.output_format, OutputFormat::Pdf) {
         col2.push(tooltip_wrap_at(
             state,
             TooltipArea::PagesDeviceCard,
-            GUI_TEXT.interactive.tooltips.jbig2_text.clone(),
+            GUI_TEXT.interactive.tooltips.truetyping_text.clone(),
             AttachedPosition::Left,
             compact_checkbox_row(
-                GUI_TEXT.interactive.labels.jbig2_text.clone(),
-                matches!(options.compression_type, CompressionType::Jbig2),
+                GUI_TEXT.interactive.labels.truetyping_text.clone(),
+                matches!(options.compression_type, CompressionType::Truetyping),
                 {
                     let mut state = state;
                     move |_| {
                         let mut s = state.write();
-                        let enable = !matches!(s.options.compression_type, CompressionType::Jbig2);
+                        let enable =
+                            !matches!(s.options.compression_type, CompressionType::Truetyping);
                         s.options.set_text_encoder(if enable {
-                            CompressionType::Jbig2
-                        } else {
                             CompressionType::Truetyping
+                        } else {
+                            CompressionType::Jbig2
                         });
                     }
                 },
@@ -1905,7 +1906,7 @@ fn pages_device_card(
                         s.options.set_text_encoder(if enable {
                             CompressionType::Ccitt4
                         } else {
-                            CompressionType::Truetyping
+                            CompressionType::Jbig2
                         });
                     }
                 },

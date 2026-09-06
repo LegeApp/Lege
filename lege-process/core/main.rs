@@ -983,6 +983,22 @@ fn extract_cli_options(args: Vec<String>) -> Result<(Vec<String>, CliOptions)> {
         apply_music_sheet_preset(&mut opts);
     }
 
+    // Truetyping draws the text as outlines over a background, so the ink
+    // mask only decides where those outlines go. The MRC clean path hands it
+    // a despeckled mask, while Sauvola on a raw scan keeps the paper grain and
+    // every speck becomes a glyph: on 41 pages of a 240-dpi book scan that was
+    // 0.77 MB and 1347 shapes against 2.56 MB and 13087. Grayscale is
+    // therefore how truetyping is rendered unless a bilevel mode was asked
+    // for by name.
+    if opts.text_format.as_deref() == Some("truetyping")
+        && !opts.grayscale
+        && opts.binarization.is_none()
+        && opts.threshold.is_none()
+        && opts.sauvola_k.is_none()
+    {
+        opts.grayscale = true;
+    }
+
     Ok((remaining, opts))
 }
 
@@ -2238,12 +2254,12 @@ fn handle_simple_processing(
     }
 
     if pipeline_config.text_format() == "jbig2" {
-        // Symbol substitution is the default: it is the reason to pick JBIG2
-        // over CCITT G4 on scanned text. It is a lossy transform -- near
-        // identical glyphs collapse to one shared bitmap -- so `--no-symbol`
-        // (or `--jbig2-mode generic`) selects the bit-exact generic region
-        // for archival masters and line art.
-        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or(Jbig2Mode::Symbol);
+        // The bit-exact generic region is the default. Symbol substitution
+        // compresses scanned text far better, but it is a lossy transform --
+        // near identical glyphs collapse to one shared bitmap, and a wrong
+        // match silently rewrites a word -- so it is opt-in, through
+        // `--sym-unify` (the GUI's checkbox) or `--symbol-mode`.
+        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or(Jbig2Mode::Generic);
         pipeline_config.set_jbig2_mode(selected_mode);
     }
     apply_reflow_option(&mut pipeline_config, cli_opts.reflow)?;
@@ -3357,7 +3373,7 @@ fn parse_format_selection_with_options(
             false, // no_cover_page
             false, // no_binarization
             false, // invert_input
-            Jbig2Mode::Symbol,
+            Jbig2Mode::Generic,
             false, // center_margins
             false, // crop_margins
             false, // force_crop
@@ -3473,15 +3489,16 @@ fn parse_format_selection_with_options(
 
     let jbig2_mode = if format_num == 2 {
         if has_g_flag {
-            // 'g' is the explicit opt-out; it wins over every other modifier.
+            // The generic region is the default now, so 'g' is retained as an
+            // explicit no-op for the option strings already in circulation.
+            let _ = layout_detection;
             Jbig2Mode::Generic
         } else if has_u_flag || has_unify_flag {
             Jbig2Mode::SymUnify
-        } else {
-            // Symbol is the default now, so 's' is retained as an explicit
-            // no-op for the option strings already in circulation.
-            let _ = (has_s_flag, layout_detection);
+        } else if has_s_flag {
             Jbig2Mode::Symbol
+        } else {
+            Jbig2Mode::Generic
         }
     } else {
         Jbig2Mode::Generic
@@ -3855,6 +3872,39 @@ mod cli_parser_tests {
             opts.mrc_ink_threshold.is_none(),
             "preset no longer tunes the MRC ink threshold"
         );
+    }
+
+    #[test]
+    fn truetyping_renders_in_grayscale_unless_a_bilevel_mode_is_named() {
+        let (_remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "book.pdf".to_string(),
+            "--truetyping".to_string(),
+        ])
+        .expect("truetyping args should parse");
+        assert!(opts.grayscale, "truetyping renders the ink mask MRC-clean");
+
+        let (_remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "book.pdf".to_string(),
+            "--truetyping".to_string(),
+            "--binarization".to_string(),
+            "adaptive".to_string(),
+        ])
+        .expect("truetyping args should parse");
+        assert!(
+            !opts.grayscale,
+            "a named binarization mode is the user's own choice"
+        );
+
+        let (_remaining, opts) = extract_cli_options(vec![
+            "lege".to_string(),
+            "book.pdf".to_string(),
+            "--text-format".to_string(),
+            "jbig2".to_string(),
+        ])
+        .expect("jbig2 args should parse");
+        assert!(!opts.grayscale, "only truetyping asks for grayscale");
     }
 
     #[test]
@@ -4942,12 +4992,12 @@ fn build_png_folder_pipeline_config(cli_opts: &CliOptions) -> Result<PipelineCon
     }
 
     if pipeline_config.text_format() == "jbig2" {
-        // Symbol substitution is the default: it is the reason to pick JBIG2
-        // over CCITT G4 on scanned text. It is a lossy transform -- near
-        // identical glyphs collapse to one shared bitmap -- so `--no-symbol`
-        // (or `--jbig2-mode generic`) selects the bit-exact generic region
-        // for archival masters and line art.
-        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or(Jbig2Mode::Symbol);
+        // The bit-exact generic region is the default. Symbol substitution
+        // compresses scanned text far better, but it is a lossy transform --
+        // near identical glyphs collapse to one shared bitmap, and a wrong
+        // match silently rewrites a word -- so it is opt-in, through
+        // `--sym-unify` (the GUI's checkbox) or `--symbol-mode`.
+        let selected_mode = cli_opts.jbig2_mode.clone().unwrap_or(Jbig2Mode::Generic);
         pipeline_config.set_jbig2_mode(selected_mode);
     }
     apply_reflow_option(&mut pipeline_config, cli_opts.reflow)?;

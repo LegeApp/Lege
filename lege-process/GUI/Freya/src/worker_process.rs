@@ -450,13 +450,14 @@ pub fn gui_options_to_cli_args(
     }
     // Mirrors the toggle's own visibility condition: symbol substitution only
     // exists while JBIG2 is the text encoder, so the flag is only sent then.
-    if options.no_symbol_mode
+    // Without it the worker writes the bit-exact generic region.
+    if options.symbol_mode
         && matches!(options.output_format, OutputFormat::Pdf)
         && !options.jpeg_compat
         && !options.grayscale_mode
         && matches!(options.compression_type, CompressionType::Jbig2)
     {
-        args.push("--no-symbol".into());
+        args.push("--sym-unify".into());
     }
     if options.high_quality_output {
         args.push("--high-quality".into());
@@ -997,14 +998,14 @@ mod tests {
 
         assert_eq!(
             cli_arg_after(&args, "--text-format").as_deref(),
-            Some("truetyping")
+            Some("jbig2")
         );
         assert!(!args.iter().any(|arg| arg == OsStr::new("--no-layout")));
         assert!(args.iter().any(|arg| arg == OsStr::new("--dither")));
     }
 
     #[test]
-    fn the_default_pdf_run_asks_for_truetyping() {
+    fn the_default_pdf_run_asks_for_jbig2() {
         let options = ProcessingOptions::new();
 
         let args = gui_options_to_cli_args(
@@ -1016,7 +1017,7 @@ mod tests {
 
         assert_eq!(
             cli_arg_after(&args, "--text-format").as_deref(),
-            Some("truetyping")
+            Some("jbig2")
         );
         assert!(!args.iter().any(|arg| arg == OsStr::new("--jpeg-compat")));
         assert!(!args.iter().any(|arg| arg == OsStr::new("--no-symbol")));

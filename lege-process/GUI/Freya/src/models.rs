@@ -26,10 +26,14 @@ pub enum OcrMode {
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CompressionType {
     /// Truetyping: the printed text becomes an embedded per-book TrueType
-    /// font and the page carries real text objects. The default.
-    #[default]
+    /// font and the page carries real text objects. Opt-in: on a long book
+    /// it is several times slower than JBIG2 and about twice the size, since
+    /// every 40-odd pages of glyph variants fill a font's id space and start
+    /// another font.
     Truetyping,
-    /// JBIG2 symbol-substitution raster text.
+    /// JBIG2 symbol-substitution raster text. The default: the smallest and
+    /// fastest text encoding, and every reader understands it.
+    #[default]
     Jbig2,
     /// CCITT Group 4 raster text; reached through compatibility mode.
     Ccitt4,
@@ -122,10 +126,10 @@ pub struct ProcessingOptions {
     pub use_jbig2_halftone: bool,
     pub high_quality_output: bool,
     pub jpeg_compat: bool,
-    /// Turn JBIG2 symbol substitution off, producing a bit-exact generic
-    /// region. Only meaningful while JBIG2 is the text encoder, i.e. while
-    /// compatibility mode is off.
-    pub no_symbol_mode: bool,
+    /// Turn JBIG2 symbol substitution on, in its unifying form. Off is the
+    /// bit-exact generic region. Only meaningful while JBIG2 is the text
+    /// encoder, i.e. while compatibility mode is off.
+    pub symbol_mode: bool,
     pub invert_input: bool,
 
     pub center_margins: bool,
@@ -151,12 +155,15 @@ impl ProcessingOptions {
     pub fn new() -> Self {
         Self {
             output_format: OutputFormat::Pdf,
-            // Truetyping default; JBIG2 and CCITT4 (compatibility mode) are
-            // the two opt-outs.
-            compression_type: CompressionType::Truetyping,
-            // Symbol substitution is the encoder default and what makes JBIG2
-            // worth choosing on text; this is the opt-out.
-            no_symbol_mode: false,
+            // JBIG2 default; truetyping and CCITT4 (compatibility mode) are
+            // the two opt-outs. Truetyping was the default for two days in
+            // September 2026 and went back: on an 886-page scan it took 3.6x
+            // the time and made 2.1x the file of JBIG2.
+            compression_type: CompressionType::Jbig2,
+            // Symbol substitution compresses scanned text far better, but a
+            // wrong match rewrites a word, so it is the opt-in and the page
+            // is bit-exact until it is asked for.
+            symbol_mode: false,
             cover_image_type: CoverImageType::Jpeg,
             image_processing_type: ImageProcessingType::Original,
             original_cover: true,
@@ -190,16 +197,25 @@ impl ProcessingOptions {
         }
     }
 
-    /// Choose the PDF text encoder. Compatibility mode and JBIG2 are the two
-    /// opt-outs from truetyping and exclude each other; clearing either one
-    /// returns to truetyping.
+    /// Choose the PDF text encoder. Compatibility mode and truetyping are the
+    /// two opt-outs from JBIG2 and exclude each other; clearing either one
+    /// returns to JBIG2.
     pub fn set_text_encoder(&mut self, encoder: CompressionType) {
         self.jpeg_compat = matches!(encoder, CompressionType::Ccitt4);
         if !matches!(encoder, CompressionType::Jbig2) {
-            self.no_symbol_mode = false;
+            self.symbol_mode = false;
         }
         if matches!(encoder, CompressionType::Ccitt4) {
             self.use_jbig2_halftone = false;
+        }
+        // Truetyping draws its text as outlines over a background, so what the
+        // ink mask needs is to be clean, not to be a page. The MRC clean path
+        // despeckles it; Sauvola on a raw scan keeps the paper grain and turns
+        // every speck into a glyph (41 pages of a book scan: 0.77 MB against
+        // 2.56 MB). Grayscale therefore comes on with truetyping, and stays
+        // selectable on its own.
+        if matches!(encoder, CompressionType::Truetyping) {
+            self.grayscale_mode = true;
         }
         self.compression_type = encoder;
     }
@@ -214,7 +230,7 @@ impl ProcessingOptions {
     }
 
     /// Select JBIG2 halftone encoding for detected image regions. This is
-    /// independent of whether the page's text uses truetyping or JBIG2.
+    /// independent of whether the page's text uses JBIG2 or truetyping.
     pub fn set_jbig2_halftone_images(&mut self) {
         self.image_processing_type = ImageProcessingType::Dithered;
         self.use_jbig2_halftone = true;
@@ -466,28 +482,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pdf_text_format_is_truetyping_until_an_encoder_is_chosen() {
+    fn pdf_text_format_is_jbig2_until_an_encoder_is_chosen() {
         let mut options = ProcessingOptions::new();
-        assert_eq!(options.effective_text_format(), "truetyping");
-
-        options.set_text_encoder(CompressionType::Jbig2);
         assert_eq!(options.effective_text_format(), "jbig2");
+        assert_eq!(CompressionType::default(), CompressionType::Jbig2);
+
+        options.set_text_encoder(CompressionType::Truetyping);
+        assert_eq!(options.effective_text_format(), "truetyping");
 
         options.set_text_encoder(CompressionType::Ccitt4);
         assert_eq!(options.effective_text_format(), "ccitt4");
 
-        options.set_text_encoder(CompressionType::Truetyping);
-        assert_eq!(options.effective_text_format(), "truetyping");
+        options.set_text_encoder(CompressionType::Jbig2);
+        assert_eq!(options.effective_text_format(), "jbig2");
     }
 
     #[test]
     fn image_handling_no_longer_decides_the_text_encoder() {
         let mut options = ProcessingOptions::new();
         options.image_processing_type = ImageProcessingType::Dithered;
-        assert_eq!(options.effective_text_format(), "truetyping");
+        assert_eq!(options.effective_text_format(), "jbig2");
 
         options.layout_analysis = false;
-        assert_eq!(options.effective_text_format(), "truetyping");
+        assert_eq!(options.effective_text_format(), "jbig2");
     }
 
     #[test]
@@ -497,16 +514,39 @@ mod tests {
         options.set_text_encoder(CompressionType::Ccitt4);
         assert!(options.jpeg_compat);
 
+        options.set_text_encoder(CompressionType::Truetyping);
+        assert!(!options.jpeg_compat);
+
         options.set_text_encoder(CompressionType::Jbig2);
         assert!(!options.jpeg_compat);
 
-        options.no_symbol_mode = true;
+        options.symbol_mode = true;
         options.set_text_encoder(CompressionType::Truetyping);
-        assert!(!options.jpeg_compat);
         assert!(
-            !options.no_symbol_mode,
+            !options.symbol_mode,
             "a JBIG2-only sub-option cannot outlive JBIG2"
         );
+    }
+
+    #[test]
+    fn symbol_substitution_is_off_until_it_is_asked_for() {
+        let options = ProcessingOptions::new();
+        assert!(!options.symbol_mode);
+    }
+
+    #[test]
+    fn truetyping_turns_grayscale_on_and_leaves_it_to_the_user() {
+        let mut options = ProcessingOptions::new();
+        assert!(!options.grayscale_mode);
+
+        options.set_text_encoder(CompressionType::Truetyping);
+        assert!(options.grayscale_mode);
+
+        // The pair of buttons still decides: binarized truetyping stays
+        // reachable, and going back to JBIG2 does not undo the choice.
+        options.grayscale_mode = false;
+        options.set_text_encoder(CompressionType::Jbig2);
+        assert!(!options.grayscale_mode);
     }
 
     #[test]
